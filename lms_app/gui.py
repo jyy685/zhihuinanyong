@@ -23,7 +23,7 @@ if sys.platform == 'win32':
         pass
 
 APP_NAME = '智慧南雍课件助手'
-VERSION = '1.1.0'
+VERSION = '1.1.1'
 DATA_DIR = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'ZhihuiNanyong'
 
 
