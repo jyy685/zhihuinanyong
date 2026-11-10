@@ -33,3 +33,5 @@ dist/
 settings.local.json
 Thumbs.db
 .DS_Store
+smoke_*.json
+packaging/*.spec

@@ -1,0 +1,41 @@
+name: Build Windows EXE
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'app.py'
+      - 'decode.py'
+      - 'lms_app/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'packaging/**'
+      - 'requirements*.txt'
+      - 'build.ps1'
+      - 'docs/COOKIE_GUIDE.md'
+      - '.github/workflows/build-windows.yml'
+permissions:
+  contents: read
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install -r requirements-build.txt
+      - run: python -m unittest discover -s tests -v
+      - name: Build single EXE
+        shell: pwsh
+        run: ./build.ps1
+      - name: Verify isolated executable
+        run: python scripts/verify_exe.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ZhihuiNanyong-Windows-x64
+          path: |
+            dist/ZhihuiNanyong.exe
+            dist/SHA256SUMS.txt
+            dist/verification.json
+          if-no-files-found: error

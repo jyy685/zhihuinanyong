@@ -1,13 +1,53 @@
-# 智慧南雍课件下载工具
+# 智慧南雍课件助手
+
+## Windows 单文件桌面应用
+
+已实现可联网使用的图形应用，可打包为单个 **ZhihuiNanyong.exe**。使用者双击 EXE 即可，无需安装 Python，也无需携带 cookie.txt、源码或资源文件夹。
+
+1. 点击“Cookie 获取帮助”，按 **F12 → 应用程序 / Application → 存储 → Cookie → 学校域名** 找到并复制 Cookie。
+2. 粘贴到连接设置，点击“验证并探测全部课程”；也可以导入自己导出的 Cookie 文件。
+3. 左侧点课程名称查看，点首列复选框选择整门课；右侧可单选课件或全选筛选结果。课程显示部分选中状态，切换课程保留选择。
+4. 点击“浏览…”选择保存目录，再点击“下载已勾选课件”。
+5. “下载任务”页查看进度和错误，可停止、重试失败/未完成、打开文件夹。扫描时同样可以停止，已探测内容会保留。
+
+支持课程搜索、学期筛选、课件搜索、类型筛选、只看已选、单课程重新探测。PDF 先取原件，原件不可下载时尝试当前账号可访问的预览 PDF；其他类型下载可访问原件。文件按课程 ID 建子目录。
+
+Cookie 只保存在本次运行内存中；隐藏输入框不等于保存登录。退出后需要重新粘贴或导入。应用目录偏好和本次任务结果保存在 `%LOCALAPPDATA%/ZhihuiNanyong/`，不含 Cookie 和签名 URL。目录无写权限会提示重新选择，已有不完整文件不覆盖。停止后重试会从文件开头下载；已经完成的文件保留。重试任务保留原任务目录，重新勾选开始下载则使用当前目录。
+
+### 从源码启动与打包
+
+```powershell
+python -m pip install -r requirements.txt
+python app.py
+```
+
+开发者在 Windows、Python 3.13 环境安装构建依赖并执行：
+
+```powershell
+python -m pip install -r requirements-build.txt
+.\build.ps1
+```
+
+产物是 `dist/ZhihuiNanyong.exe`（Windows x64）。仓库也提供 GitHub Actions 的 **Build Windows EXE** 工作流；成功运行后可在该次运行的 Artifacts 中下载 `ZhihuiNanyong-Windows-x64`，其中包含 EXE、SHA256 校验信息和隔离验证报告。界面使用 Python 内置 Tkinter/ttk，网络任务在后台线程运行，使用 PyInstaller onefile 打包运行环境和内置教程。首次启动需要解压到系统临时目录，可能比后续操作稍慢。该 EXE 不适用于 macOS/Linux。
+
+### 验证
+
+```powershell
+python -m unittest discover -s tests -v
+python app.py --smoke-test smoke_source.json
+.\dist\ZhihuiNanyong.exe --smoke-test smoke_exe.json
+```
+
+`--smoke-test` 是离线诊断入口：使用本地模拟服务器验证课程探测、真实下载服务、跨课程选择、中文路径、完整文件跳过与打包教程。它不会连接学校，也不会使用个人 Cookie。退出后读取 JSON 中的 `ok`。
 
 ## Cookie 获取与应用设计
 
 Cookie 获取路径：浏览器 **F12 → 应用程序 / Application → 存储 → Cookie / Cookies → https://lms.nju.edu.cn**。
 找不到“应用程序”时，点击开发者工具标签栏的 **»**，或打开开发者工具右上角 **⋮ → 更多工具 → 应用程序**。
 
-完整的打开面板、复制表格和逐项复制教程见 [Cookie 获取指南](docs/COOKIE_GUIDE.md)。当前脚本将复制内容保存为 UTF-8 的 cookie.txt；正式图形应用设计为直接粘贴到输入框。
+完整的打开面板、复制表格和逐项复制教程见 [Cookie 获取指南](docs/COOKIE_GUIDE.md)。当前脚本将复制内容保存为 UTF-8 的 cookie.txt；桌面应用直接粘贴到输入框。
 
-图形应用当前处于设计阶段：[功能设计](docs/APP_DESIGN.md)、[交互原型](docs/app_prototype.html)。原型使用示例数据，不连接学校或下载文件，请勿向原型粘贴真实 Cookie。
+图形应用已实现；以下保留设计阶段资料：[功能设计](docs/APP_DESIGN.md)、[交互原型](docs/app_prototype.html)。原型使用示例数据，不连接学校或下载文件，请勿向原型粘贴真实 Cookie。
 
 ## 启动并选择下载
 
