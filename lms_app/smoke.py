@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import decode
-from .gui import Application, resource
+from .gui import Application, resource, VERSION
 
 
 class FixtureHandler(BaseHTTPRequestHandler):
@@ -48,7 +48,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
 
 
 def run(report_path):
-    report = {'ok': False, 'checks': []}
+    report = {'ok': False, 'version': VERSION, 'checks': []}
     root = None
     server = ThreadingHTTPServer(('127.0.0.1', 0), FixtureHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -58,7 +58,7 @@ def run(report_path):
         with tempfile.TemporaryDirectory() as temp:
             root = tk.Tk()
             root.withdraw()
-            app = Application(root, Path(temp) / 'settings')
+            app = Application(root, Path(temp) / 'settings', enable_updates=False)
 
             def wait_idle():
                 deadline = time.monotonic() + 30
@@ -97,12 +97,27 @@ def run(report_path):
             assert app.tasks[0]['state'] == '已跳过'
             report['checks'].append('Completed-file validation and skip')
             assert resource('docs/COOKIE_GUIDE.md').exists()
-            app.help()
+            guide = app.help()
             root.update()
-            guide = next(w for w in root.winfo_children() if isinstance(w, tk.Toplevel))
-            text = next(w for w in guide.winfo_children() if isinstance(w, tk.Text)).get('1.0', 'end')
-            assert 'Application' in text and 'Cookie Value' in text
-            report['checks'].append('Bundled Application-panel Cookie help')
+            assert len(guide.originals) == 1
+            guide.show_step(1)
+            root.update()
+            assert len(guide.originals) == 2
+            viewer = guide.zoom('school-cookies-redacted.png')
+            root.update()
+            assert viewer.display_image.width() > 500
+            viewer.destroy()
+            guide.show_step(2)
+            guide.show_step(3)
+            guide.destroy()
+            report['checks'].append('Bundled redacted tutorial images, step navigation and zoom')
+            app.events.put(('update', {'state': 'available', 'version': '99.0.0', 'url': 'https://github.com/jyy685/zhihuinanyong/releases/tag/v99.0.0'}))
+            root.update()
+            time.sleep(.1)
+            root.update()
+            assert app.update_dot.cget('text') == '●'
+            assert '更新' in app.update_button.cget('text')
+            report['checks'].append('Silent update notification and red-dot state')
             settings = (Path(temp) / 'settings/settings.json').read_text(encoding='utf-8')
             task_report = (Path(temp) / 'settings/last_download.json').read_text(encoding='utf-8')
             assert 'offline-diagnostic' not in settings + task_report

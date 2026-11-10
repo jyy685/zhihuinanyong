@@ -12,6 +12,8 @@ from tkinter import ttk, filedialog, messagebox
 
 import requests
 from .core import Client, Cancelled, LoginExpired, parse_cookies, check_cancel, friendly_error
+from .help_ui import CookieGuide
+from .updater import check_latest, RELEASES_URL
 
 if sys.platform == 'win32':
     try:
@@ -21,7 +23,7 @@ if sys.platform == 'win32':
         pass
 
 APP_NAME = '智慧南雍课件助手'
-VERSION = '1.0.0'
+VERSION = '1.1.0'
 DATA_DIR = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'ZhihuiNanyong'
 
 
@@ -36,7 +38,7 @@ def size_text(size):
 
 
 class Application:
-    def __init__(self, root, settings_dir=DATA_DIR):
+    def __init__(self, root, settings_dir=DATA_DIR, enable_updates=True):
         self.root, self.settings_dir = root, Path(settings_dir)
         self.events = queue.Queue()
         self.stop_event = threading.Event()
@@ -51,6 +53,9 @@ class Application:
         self.pending_courses = set()
         self.tasks = []
         self.cookie_visible = True
+        self.update_info = None
+        self.update_checking = False
+        self.update_manual_pending = False
         self.status = tk.StringVar(value='未连接：请粘贴 Cookie 后验证。')
         self.course_query = tk.StringVar()
         self.file_query = tk.StringVar()
@@ -68,6 +73,8 @@ class Application:
         self.build()
         self.root.after(80, self.poll)
         self.root.protocol('WM_DELETE_WINDOW', self.close)
+        if enable_updates:
+            self.root.after(1800, self.check_updates)
 
     def build(self):
         r = self.root
@@ -83,6 +90,10 @@ class Application:
         top.pack(fill='x')
         ttk.Label(top, text=APP_NAME, font=('Microsoft YaHei UI', 18, 'bold')).pack(side='left')
         ttk.Button(top, text='Cookie 获取帮助', command=self.help).pack(side='right')
+        self.update_button = ttk.Button(top, text='检查更新', command=self.manual_update)
+        self.update_button.pack(side='right', padx=6)
+        self.update_dot = tk.Label(top, text='', fg='#dc2626', font=('Segoe UI', 15), width=1)
+        self.update_dot.pack(side='right')
         ttk.Button(top, text='打开学校网站', command=lambda: webbrowser.open('https://lms.nju.edu.cn/user/courses#/')).pack(side='right', padx=8)
         self.auth = ttk.LabelFrame(r, text='连接设置 · Cookie 仅保存在本次运行内存中', padding=10)
         self.auth.pack(fill='x', padx=16, pady=(0, 8))
@@ -215,23 +226,59 @@ class Application:
         self.update_controls()
 
     def help(self):
+        return CookieGuide(self.root, resource('docs/images'), self.focus_cookie)
+
+    def focus_cookie(self):
+        self.root.lift()
+        if not self.cookie_visible:
+            self.toggle_cookie()
+        self.cookie_text.focus_set()
+
+    def manual_update(self):
+        if self.update_info and self.update_info.get('state') == 'available' and not self.update_checking:
+            self.show_update()
+        else:
+            self.check_updates(manual=True)
+
+    def check_updates(self, manual=False):
+        self.update_manual_pending = self.update_manual_pending or manual
+        if self.update_checking:
+            return
+        self.update_checking = True
+        # Independent from the course/download worker. No LMS cookies are shared.
+        self.update_button.configure(text='检查更新中…')
+
+        def worker():
+            try:
+                result = check_latest(VERSION)
+            except Exception:
+                result = {'state': 'error', 'message': '暂时无法检查更新，请稍后重试。'}
+            self.events.put(('update', result))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def show_update(self):
+        info = self.update_info
+        if not info or info.get('state') != 'available':
+            return
         win = tk.Toplevel(self.root)
-        win.title('如何找到应用程序并复制 Cookie')
-        win.geometry('800x650')
-        text = tk.Text(win, wrap='word', padx=18, pady=14, font=('Microsoft YaHei UI', 11))
-        scroll = ttk.Scrollbar(win, command=text.yview)
-        text.configure(yscrollcommand=scroll.set)
-        scroll.pack(side='right', fill='y')
-        text.pack(fill='both', expand=True)
-        try:
-            guide = resource('docs/COOKIE_GUIDE.md').read_text(encoding='utf-8-sig')
-        except OSError:
-            guide = 'F12 → 应用程序（或 » / 更多工具）→ 存储 → Cookie → https://lms.nju.edu.cn\n复制表格，粘贴后验证。'
-        guide = guide.replace('**', '').replace('```text', '').replace('```', '')
-        guide = re.sub(r'^#+ ', '', guide, flags=re.M)
-        guide = guide.replace('交互设计原型不处理真实登录，请勿向原型粘贴真实 Cookie。', '')
-        text.insert('1.0', guide)
-        text.configure(state='disabled')
+        win.title('发现新版本')
+        win.geometry('650x490')
+        win.minsize(500, 350)
+        frame = ttk.Frame(win, padding=20)
+        frame.pack(fill='both', expand=True)
+        ttk.Label(frame, text=f"新版本 {info['version']} 已发布", font=('Microsoft YaHei UI', 16, 'bold')).pack(anchor='w')
+        ttk.Label(frame, text=f'当前版本 {VERSION} · 来自项目 GitHub Releases').pack(anchor='w', pady=8)
+        notes = tk.Text(frame, wrap='word', height=10, font=('Microsoft YaHei UI', 10))
+        notes.insert('1.0', info.get('notes', '暂无说明。'))
+        notes.configure(state='disabled')
+        notes.pack(fill='both', expand=True)
+        ttk.Label(frame, text='下载后退出旧版，再运行新版 EXE；不会自动覆盖正在运行的文件。', wraplength=580).pack(anchor='w', pady=10)
+        actions = ttk.Frame(frame)
+        actions.pack(fill='x')
+        ttk.Button(actions, text='查看发布页面', command=lambda: webbrowser.open(info['url'])).pack(side='left')
+        if info.get('download_url'):
+            ttk.Button(actions, text='下载新版 EXE', command=lambda: webbrowser.open(info['download_url'])).pack(side='left', padx=8)
+        ttk.Button(actions, text='重新检查', command=lambda: (win.destroy(), self.check_updates(manual=True))).pack(side='right')
 
     @staticmethod
     def can_select(u):
@@ -567,7 +614,25 @@ class Application:
             except queue.Empty:
                 break
             kind, *data = event
-            if kind == 'courses':
+            if kind == 'update':
+                result = data[0]
+                self.update_checking = False
+                manual = self.update_manual_pending
+                self.update_manual_pending = False
+                # Retain a known update marker after a transient network failure.
+                if result['state'] != 'error':
+                    self.update_info = result
+                available = self.update_info and self.update_info.get('state') == 'available'
+                self.update_dot.configure(text='●' if available else '')
+                self.update_button.configure(text='有更新 · 点击查看' if available else '检查更新')
+                if manual:
+                    if result['state'] == 'available':
+                        self.show_update()
+                    elif result['state'] == 'error':
+                        messagebox.showwarning('检查更新', result['message'])
+                    else:
+                        messagebox.showinfo('检查更新', result['message'])
+            elif kind == 'courses':
                 self.connected = True
                 self.courses = []
                 accessible = {c['id'] for c in data[0]}
