@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 import webbrowser
 from pathlib import Path
 from tkinter import ttk, filedialog, messagebox
@@ -13,6 +14,8 @@ from tkinter import ttk, filedialog, messagebox
 import requests
 from .core import Client, Cancelled, LoginExpired, parse_cookies, check_cancel, friendly_error
 from .help_ui import CookieGuide
+from .cookies import extract_cookies
+from .ui_support import Flow, ScrollBody, TreeTooltip, fit_window
 from .updater import check_latest, RELEASES_URL
 
 if sys.platform == 'win32':
@@ -23,7 +26,7 @@ if sys.platform == 'win32':
         pass
 
 APP_NAME = '智慧南雍课件助手'
-VERSION = '1.1.1'
+VERSION = '1.2.0'
 DATA_DIR = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'ZhihuiNanyong'
 
 
@@ -53,6 +56,12 @@ class Application:
         self.pending_courses = set()
         self.tasks = []
         self.cookie_visible = True
+        self.settings = {}
+        self.sort_state = {}
+        self._save_timer = None
+        self._cookie_timer = None
+        self._normal_geometry = None
+        self._pane_ratio = .27
         self.update_info = None
         self.update_checking = False
         self.update_manual_pending = False
@@ -67,10 +76,16 @@ class Application:
         self.folder = tk.StringVar(value=str(Path.home() / 'Downloads' / '智慧南雍课件'))
         try:
             settings = json.loads((self.settings_dir / 'settings.json').read_text(encoding='utf-8'))
-            self.folder.set(settings.get('folder') or self.folder.get())
+            if isinstance(settings, dict):
+                self.settings = settings
+                if isinstance(settings.get('folder'), str):
+                    self.folder.set(settings['folder'])
+                self._pane_ratio = max(.18, min(.5, float(settings.get('pane_ratio', .27))))
         except (OSError, ValueError, TypeError):
             pass
         self.build()
+        self.root.bind('<Configure>', self.window_changed, add='+')
+        self.root.bind('<Destroy>',self.teardown,add='+')
         self.root.after(80, self.poll)
         self.root.protocol('WM_DELETE_WINDOW', self.close)
         if enable_updates:
@@ -79,121 +94,299 @@ class Application:
     def build(self):
         r = self.root
         r.title(f'{APP_NAME} {VERSION}')
-        r.geometry('1250x850')
-        r.minsize(930, 680)
+        w,h,x,y = fit_window(r,self.settings.get('geometry') if self.settings.get('remember_window',True) else None)
+        self._normal_geometry = f'{w}x{h}{x:+d}{y:+d}'
+        r.columnconfigure(0, weight=1)
+        r.rowconfigure(2, weight=1)
         style = ttk.Style(r)
         if 'vista' in style.theme_names():
             style.theme_use('vista')
-        style.configure('Treeview', rowheight=31, font=('Microsoft YaHei UI', 10))
-        style.configure('Treeview.Heading', font=('Microsoft YaHei UI', 10))
-        top = ttk.Frame(r, padding=(16, 10))
-        top.pack(fill='x')
-        ttk.Label(top, text=APP_NAME, font=('Microsoft YaHei UI', 18, 'bold')).pack(side='left')
-        ttk.Button(top, text='Cookie 获取帮助', command=self.help).pack(side='right')
+        font = tkfont.Font(family='Microsoft YaHei UI', size=9)
+        style.configure('Treeview', rowheight=max(27, font.metrics('linespace')+8), font=('Microsoft YaHei UI', 9))
+        style.configure('Treeview.Heading', font=('Microsoft YaHei UI', 9))
+        top = ttk.Frame(r, padding=(10, 6))
+        top.grid(row=0, column=0, sticky='ew')
+        top.columnconfigure(0, weight=1)
+        self.app_title = ttk.Label(top, text=APP_NAME, font=('Microsoft YaHei UI', 13, 'bold'), wraplength=340)
+        self.app_title.grid(row=0, column=0, sticky='w')
+        self.update_dot = tk.Label(top, text='', fg='#dc2626', font=('Segoe UI', 12), width=1)
+        self.update_dot.grid(row=0, column=1)
         self.update_button = ttk.Button(top, text='检查更新', command=self.manual_update)
-        self.update_button.pack(side='right', padx=6)
-        self.update_dot = tk.Label(top, text='', fg='#dc2626', font=('Segoe UI', 15), width=1)
-        self.update_dot.pack(side='right')
-        ttk.Button(top, text='打开学校网站', command=lambda: webbrowser.open('https://lms.nju.edu.cn/user/courses#/')).pack(side='right', padx=8)
-        self.auth = ttk.LabelFrame(r, text='连接设置 · Cookie 仅保存在本次运行内存中', padding=10)
-        self.auth.pack(fill='x', padx=16, pady=(0, 8))
-        self.cookie_hint = ttk.Label(self.auth, text='F12 → 应用程序（找不到时点 » 或 更多工具）→ 存储 → Cookie → 学校域名；复制表格后粘贴。')
-        self.cookie_hint.pack(anchor='w')
-        self.cookie_text = tk.Text(self.auth, height=3, wrap='none', font=('Consolas', 10), undo=False)
-        self.cookie_text.pack(fill='x', pady=6)
-        auth_buttons = ttk.Frame(self.auth)
-        auth_buttons.pack(fill='x')
-        self.connect_button = ttk.Button(auth_buttons, text='验证并探测全部课程', command=self.connect)
-        self.connect_button.pack(side='left')
-        self.import_button = ttk.Button(auth_buttons, text='导入 Cookie 文件', command=self.import_cookie)
-        self.import_button.pack(side='left', padx=6)
-        self.clear_cookie_button = ttk.Button(auth_buttons, text='清空 Cookie', command=self.clear_cookie)
-        self.clear_cookie_button.pack(side='left')
-        ttk.Button(auth_buttons, text='显示 / 隐藏输入框', command=self.toggle_cookie).pack(side='right')
-        ttk.Label(r, textvariable=self.status, padding=(18, 3)).pack(fill='x')
+        self.update_button.grid(row=0, column=2, padx=4)
+        more = ttk.Menubutton(top, text='更多')
+        menu = tk.Menu(more, tearoff=False)
+        menu.add_command(label='连接设置', command=lambda: self.tabs.select(2))
+        menu.add_command(label='Cookie 获取教程', command=self.help)
+        menu.add_command(label='打开学校网站', command=lambda: webbrowser.open('https://lms.nju.edu.cn/user/courses#/'))
+        menu.add_separator()
+        menu.add_command(label='窗口设置', command=self.window_settings)
+        menu.add_command(label='重置窗口布局', command=self.reset_layout)
+        more.configure(menu=menu)
+        more.grid(row=0, column=3)
+        self.status_label = ttk.Label(r, textvariable=self.status, padding=(12, 3), wraplength=1000)
+        self.status_label.grid(row=1, column=0, sticky='ew')
         self.tabs = ttk.Notebook(r)
-        self.tabs.pack(fill='both', expand=True, padx=16, pady=6)
-        catalog = ttk.Frame(self.tabs, padding=8)
-        tasks = ttk.Frame(self.tabs, padding=8)
-        self.tabs.add(catalog, text='课程与课件')
-        self.tabs.add(tasks, text='下载任务')
-        pane = ttk.Panedwindow(catalog, orient='horizontal')
-        pane.pack(fill='both', expand=True)
-        left, right = ttk.Frame(pane), ttk.Frame(pane)
-        pane.add(left, weight=1)
-        pane.add(right, weight=3)
-        ttk.Entry(left, textvariable=self.course_query).pack(fill='x', padx=(0, 8), pady=(0, 6))
-        self.semester_box = ttk.Combobox(left, textvariable=self.semester, values=['全部学期'], state='readonly')
-        self.semester_box.pack(fill='x', padx=(0, 8), pady=(0, 6))
-        self.course_tree = self.tree(left, ('name', 'count'), ('勾选 / 课程名称', '课件状态'), (230, 90))
+        self.tabs.grid(row=2, column=0, sticky='nsew', padx=8, pady=4)
+        pages = [ScrollBody(self.tabs) for _ in range(3)]
+        for page, name in zip(pages, ('课程与课件', '下载任务', '连接设置')):
+            self.tabs.add(page, text=name)
+        self.pages = pages
+        self.tabs.select(2)
+        catalog, tasks, connection = (page.body for page in pages)
+        connection.columnconfigure(0, weight=1)
+        self.auth = ttk.LabelFrame(connection, text='Cookie 仅保存在本次运行内存中', padding=10)
+        self.auth.grid(row=0, column=0, sticky='ew')
+        self.cookie_hint = ttk.Label(self.auth, text='支持 Cookie 表格、请求头、JSON，或包含这些内容的整段页面文本；会自动提取登录项。', wraplength=900)
+        self.cookie_hint.pack(anchor='w')
+        self.cookie_text = tk.Text(self.auth, height=5, width=1, wrap='word', font=('Consolas', 10), undo=False)
+        self.cookie_text.pack(fill='x', pady=6)
+        self.cookie_text.bind('<<Modified>>', self.cookie_modified)
+        self.cookie_info = tk.StringVar(value='等待粘贴。仅识别格式不代表登录有效，仍需服务器验证。')
+        self.cookie_info_label = ttk.Label(self.auth, textvariable=self.cookie_info, wraplength=900)
+        self.cookie_info_label.pack(fill='x', pady=4)
+        auth_buttons = Flow(self.auth)
+        auth_buttons.pack(fill='x')
+        self.connect_button = auth_buttons.add(ttk.Button(auth_buttons, text='验证并探测全部课程', command=self.connect))
+        self.import_button = auth_buttons.add(ttk.Button(auth_buttons, text='导入 Cookie 文件', command=self.import_cookie))
+        self.clear_cookie_button = auth_buttons.add(ttk.Button(auth_buttons, text='清空 Cookie', command=self.clear_cookie))
+        auth_buttons.add(ttk.Button(auth_buttons, text='显示 / 隐藏输入框', command=self.toggle_cookie))
+        auth_buttons.add(ttk.Button(auth_buttons, text='图文获取教程', command=self.help))
+        self.connection_tip = ttk.Label(connection,text='提示：F12 → 应用程序（或顶部 + / »）→ 存储 → Cookie → https://lms.nju.edu.cn。截图或被省略号截断的值不能还原。',wraplength=900)
+        self.connection_tip.grid(row=1,column=0,sticky='ew',pady=10)
+        self.auth.bind('<Configure>',lambda e:[label.configure(wraplength=max(180,e.width-28)) for label in (self.cookie_hint,self.cookie_info_label)])
+        pages[2].canvas.bind('<Configure>',lambda e:self.connection_tip.configure(wraplength=max(180,e.width-20)),add='+')
+        self.pane = ttk.Panedwindow(catalog, orient='horizontal')
+        self.pane.pack(fill='both', expand=True)
+        left, right = ttk.Frame(self.pane), ttk.Frame(self.pane)
+        self.pane.add(left, weight=1); self.pane.add(right, weight=3)
+        self.pane.bind('<Configure>', self.resize_pane)
+        self.pane.bind('<ButtonRelease-1>', self.remember_pane)
+        left.rowconfigure(3, weight=1); left.columnconfigure(0, weight=1)
+        ttk.Label(left, text='搜索课程').grid(row=0, column=0, sticky='w')
+        search = ttk.Frame(left); search.grid(row=1, column=0, sticky='ew', padx=(0,6), pady=3)
+        search.columnconfigure(0, weight=1)
+        ttk.Entry(search, textvariable=self.course_query, width=1).grid(row=0, column=0, sticky='ew')
+        ttk.Button(search, text='×', width=2, command=lambda: self.course_query.set('')).grid(row=0, column=1)
+        self.semester_box = ttk.Combobox(left, textvariable=self.semester, values=['全部学期'], state='readonly', width=1)
+        self.semester_box.grid(row=2, column=0, sticky='ew', padx=(0,6), pady=3)
+        course_frame = ttk.Frame(left); course_frame.grid(row=3, column=0, sticky='nsew')
+        self.course_tree = self.tree(course_frame, ('name','count'), ('勾选 / 课程名称','课件状态'), (210,85))
         self.course_tree.bind('<Button-1>', self.click_course)
         self.course_tree.bind('<space>', self.space_course)
         self.course_tree.bind('<<TreeviewSelect>>', self.course_focus)
         self.retry_scan = ttk.Button(left, text='重新探测当前课程', command=self.rescan)
-        self.retry_scan.pack(fill='x', padx=(0, 8), pady=6)
-        self.title = ttk.Label(right, text='请连接后选择课程', font=('Microsoft YaHei UI', 12, 'bold'))
-        self.title.pack(anchor='w')
-        filters = ttk.Frame(right)
-        filters.pack(fill='x', pady=6)
-        ttk.Entry(filters, textvariable=self.file_query, width=24).pack(side='left', fill='x', expand=True)
-        ttk.Combobox(filters, textvariable=self.file_type, width=12, state='readonly', values=['全部类型', 'PDF', 'PPT/PPTX', 'DOC/DOCX', 'ZIP/RAR', '其他']).pack(side='left', padx=6)
-        ttk.Checkbutton(filters, text='只看已选', variable=self.only_selected, command=self.render_files).pack(side='left')
-        actions = ttk.Frame(right)
-        actions.pack(fill='x', pady=(0, 6))
-        ttk.Button(actions, text='全选当前结果', command=lambda: self.select_visible(True)).pack(side='left')
-        ttk.Button(actions, text='清空当前结果', command=lambda: self.select_visible(False)).pack(side='left', padx=6)
-        ttk.Button(actions, text='清空全部选择', command=self.clear_selection).pack(side='right')
-        self.file_tree = self.tree(right, ('name', 'size', 'mode', 'activity'), ('勾选 / 课件名称', '大小', '下载方式', '教学活动'), (340, 85, 135, 220))
+        self.retry_scan.grid(row=4, column=0, sticky='ew', padx=(0,6), pady=5)
+        self.title = ttk.Label(right, text='请连接后选择课程', font=('Microsoft YaHei UI',10,'bold'), wraplength=600)
+        self.title.pack(fill='x')
+        self.file_search_hint = ttk.Label(right,text='搜索课件 · 点击表头排序，悬停或双击查看详情',wraplength=600)
+        self.file_search_hint.pack(fill='x',pady=(4,0))
+        search = ttk.Frame(right); search.pack(fill='x', pady=3); search.columnconfigure(0, weight=1)
+        ttk.Entry(search, textvariable=self.file_query, width=1).grid(row=0, column=0, sticky='ew')
+        ttk.Button(search, text='清除', command=lambda: self.file_query.set('')).grid(row=0, column=1, padx=4)
+        filters = Flow(right); filters.pack(fill='x')
+        filters.add(ttk.Combobox(filters, textvariable=self.file_type, width=11, state='readonly', values=['全部类型','PDF','PPT/PPTX','DOC/DOCX','ZIP/RAR','其他']))
+        filters.add(ttk.Checkbutton(filters, text='只看已选', variable=self.only_selected, command=self.render_files))
+        actions = Flow(right); actions.pack(fill='x')
+        actions.add(ttk.Button(actions, text='全选当前结果', command=lambda: self.select_visible(True)))
+        actions.add(ttk.Button(actions, text='清空当前结果', command=lambda: self.select_visible(False)))
+        actions.add(ttk.Button(actions, text='清空全部选择', command=self.clear_selection))
+        self.file_tree = self.tree(right, ('name','size','mode','activity'), ('勾选 / 课件名称','大小','下载方式','教学活动'), (300,85,125,180))
         self.file_tree.bind('<Button-1>', self.click_file)
         self.file_tree.bind('<space>', self.space_file)
-        ttk.Label(right, text='点击课程查看；点击首列复选框勾选。空格可切换选择。暂不可下载的附件仍会列出。', foreground='#64748b').pack(anchor='w', pady=5)
-        task_actions = ttk.Frame(tasks)
-        task_actions.pack(fill='x', pady=(0, 8))
-        self.retry_button = ttk.Button(task_actions, text='重试失败 / 未完成', command=self.retry_tasks)
-        self.retry_button.pack(side='left')
-        ttk.Button(task_actions, text='打开下载文件夹', command=self.open_folder).pack(side='left', padx=6)
-        self.task_tree = self.tree(tasks, ('name', 'course', 'state', 'progress', 'detail'), ('课件', '课程', '状态', '进度', '说明'), (290, 190, 110, 100, 350))
-        bottom = ttk.Frame(r, padding=(16, 6))
-        bottom.pack(fill='x')
-        ttk.Label(bottom, textvariable=self.summary).pack(anchor='w')
-        path_row = ttk.Frame(bottom)
-        path_row.pack(fill='x', pady=6)
-        ttk.Label(path_row, text='保存到：').pack(side='left')
-        self.folder_entry = ttk.Entry(path_row, textvariable=self.folder)
-        self.folder_entry.pack(side='left', fill='x', expand=True)
+        self.file_tree.bind('<Double-1>', self.file_details)
+        self.empty_hint = ttk.Label(right,text='',wraplength=600)
+        self.course_tree.heading('name', command=lambda: self.sort_by('course','name'))
+        self.course_tree.heading('count', command=lambda: self.sort_by('course','count'))
+        for column in ('name','size','mode','activity'):
+            self.file_tree.heading(column, command=lambda c=column: self.sort_by('file',c))
+        task_actions = Flow(tasks); task_actions.pack(fill='x', pady=(0,5))
+        self.retry_button = task_actions.add(ttk.Button(task_actions, text='重试失败 / 未完成', command=self.retry_tasks))
+        task_actions.add(ttk.Button(task_actions, text='打开下载文件夹', command=self.open_folder))
+        self.task_tree = self.tree(tasks, ('name','course','state','progress','detail'), ('课件','课程','状态','进度','说明'), (260,180,100,80,300))
+        self.task_tree.bind('<Double-1>', self.task_details)
+        bottom = self.footer = ttk.Frame(r, padding=(10,5))
+        bottom.grid(row=3, column=0, sticky='ew'); bottom.columnconfigure(0, weight=1)
+        self.summary_label = ttk.Label(bottom, textvariable=self.summary, wraplength=1000)
+        self.summary_label.grid(row=0, column=0, sticky='ew')
+        path_row = ttk.Frame(bottom); path_row.grid(row=1, column=0, sticky='ew', pady=3); path_row.columnconfigure(1, weight=1)
+        ttk.Label(path_row, text='保存到').grid(row=0, column=0, padx=(0,4))
+        self.folder_entry = ttk.Entry(path_row, textvariable=self.folder, width=1)
+        self.folder_entry.grid(row=0, column=1, sticky='ew')
         self.folder_button = ttk.Button(path_row, text='浏览…', command=self.choose_folder)
-        self.folder_button.pack(side='left', padx=6)
-        self.download_button = ttk.Button(path_row, text='下载已勾选课件', command=self.download_selected)
-        self.download_button.pack(side='left')
-        self.stop_button = ttk.Button(path_row, text='停止', command=self.stop)
-        self.stop_button.pack(side='left', padx=(6, 0))
-        ttk.Label(bottom, text='文件按课程 ID 建子文件夹；完整文件跳过，同名或不完整文件会提示。', foreground='#64748b').pack(anchor='w')
-        self.progress_bar = ttk.Progressbar(bottom, maximum=100)
-        self.progress_bar.pack(fill='x', pady=(6, 0))
-        ttk.Label(bottom, textvariable=self.progress_text).pack(anchor='w')
-        for var in (self.course_query, self.semester):
+        self.folder_button.grid(row=0, column=2, padx=4)
+        operations = ttk.Frame(bottom); operations.grid(row=2, column=0, sticky='ew'); operations.columnconfigure(0,weight=1)
+        self.progress_bar = ttk.Progressbar(operations, maximum=100)
+        self.progress_bar.grid(row=0, column=0, sticky='ew', padx=(0,6))
+        self.download_button = ttk.Button(operations, text='开始下载', command=self.download_selected)
+        self.download_button.grid(row=0, column=1)
+        self.stop_button = ttk.Button(operations, text='停止', command=self.stop)
+        self.stop_button.grid(row=0, column=2, padx=(6,0))
+        self.progress_label = ttk.Label(bottom, textvariable=self.progress_text, wraplength=1000)
+        self.progress_label.grid(row=3, column=0, sticky='ew')
+        r.bind('<Configure>', self.wrap_text, add='+')
+        for var in (self.course_query,self.semester):
             var.trace_add('write', lambda *_: self.render_courses())
-        for var in (self.file_query, self.file_type):
+        for var in (self.file_query,self.file_type):
             var.trace_add('write', lambda *_: self.render_files())
         self.folder.trace_add('write', lambda *_: self.update_controls())
         self.update_controls()
+        if self.settings.get('remember_window',True) and self.settings.get('maximized'):
+            r.after_idle(lambda: r.state('zoomed'))
 
     def tree(self, parent, columns, headings, widths):
         frame = ttk.Frame(parent)
         frame.pack(fill='both', expand=True)
-        tree = ttk.Treeview(frame, columns=columns, show='headings', selectmode='browse')
+        tree = ttk.Treeview(frame, columns=columns, show='headings', selectmode='browse', height=6)
         vs = ttk.Scrollbar(frame, orient='vertical', command=tree.yview)
         hs = ttk.Scrollbar(frame, orient='horizontal', command=tree.xview)
         tree.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
-        tree.grid(row=0, column=0, sticky='nsew')
-        vs.grid(row=0, column=1, sticky='ns')
-        hs.grid(row=1, column=0, sticky='ew')
-        frame.rowconfigure(0, weight=1)
-        frame.columnconfigure(0, weight=1)
-        for col, title, width in zip(columns, headings, widths):
-            tree.heading(col, text=title)
-            tree.column(col, width=width, minwidth=60, stretch=False)
+        tree.grid(row=0,column=0,sticky='nsew'); vs.grid(row=0,column=1,sticky='ns'); hs.grid(row=1,column=0,sticky='ew')
+        frame.rowconfigure(0,weight=1);frame.columnconfigure(0,weight=1)
+        for index,(col,title,width) in enumerate(zip(columns,headings,widths)):
+            tree.heading(col,text=title)
+            tree.column(col,width=width,minwidth=100 if index==0 else 60,stretch=index==0)
+        tree.tooltip = TreeTooltip(tree)
+        tree.heading_titles = dict(zip(columns,headings))
         return tree
+
+    def wrap_text(self, event=None):
+        if event and event.widget is not self.root:
+            return
+        width = max(200, self.root.winfo_width()-28)
+        for label in (self.status_label,self.summary_label,self.progress_label):
+            label.configure(wraplength=width)
+        self.app_title.configure(wraplength=max(130,width-self.update_button.winfo_reqwidth()-120))
+
+    def teardown(self,event):
+        if event.widget is self.root:
+            for token in self.root.tk.call('after','info'):
+                try:
+                    self.root.after_cancel(token)
+                except tk.TclError:
+                    pass
+
+    def resize_pane(self, event=None):
+        width = self.pane.winfo_width()
+        if width > 350:
+            self.pane.sashpos(0,max(130,min(width-220,int(width*self._pane_ratio))))
+        self.title.configure(wraplength=max(180,int(width*(1-self._pane_ratio))-30))
+        self.file_search_hint.configure(wraplength=max(180,int(width*(1-self._pane_ratio))-30))
+        self.empty_hint.configure(wraplength=max(180,int(width*(1-self._pane_ratio))-30))
+
+    def remember_pane(self, event=None):
+        width = self.pane.winfo_width()
+        if width > 1:
+            self._pane_ratio = max(.18,min(.5,self.pane.sashpos(0)/width))
+            self.save_settings()
+
+    def window_changed(self, event):
+        if event.widget is not self.root:
+            return
+        if self.root.state() == 'normal' and event.width > 100:
+            self._normal_geometry = self.root.geometry()
+        if self._save_timer:
+            self.root.after_cancel(self._save_timer)
+        self._save_timer = self.root.after(700,self.save_settings)
+
+    def save_settings(self):
+        self._save_timer = None
+        settings = {'folder':self.folder.get(), 'remember_window':bool(self.settings.get('remember_window',True))}
+        if settings['remember_window']:
+            settings.update(geometry=self._normal_geometry or self.root.geometry(),
+                            maximized=self.root.state()=='zoomed', pane_ratio=self._pane_ratio)
+        self.settings = settings
+        try:
+            self.settings_dir.mkdir(parents=True,exist_ok=True)
+            (self.settings_dir/'settings.json').write_text(json.dumps(settings,ensure_ascii=False),encoding='utf-8')
+        except OSError:
+            pass
+
+    def reset_layout(self):
+        self.root.state('normal')
+        self._pane_ratio = .27
+        self._normal_geometry = None
+        w,h,x,y = fit_window(self.root)
+        self._normal_geometry = f'{w}x{h}{x:+d}{y:+d}'
+        self.root.after_idle(self.resize_pane)
+        self.save_settings()
+
+    def window_settings(self):
+        win = tk.Toplevel(self.root);win.title('窗口设置')
+        fit_window(win,default=(700,480))
+        win.columnconfigure(0,weight=1);win.rowconfigure(0,weight=1)
+        body = ScrollBody(win);body.grid(row=0,column=0,sticky='nsew')
+        remember = tk.BooleanVar(value=bool(self.settings.get('remember_window',True)))
+        ttk.Label(body.body,text='窗口与布局',font=('Microsoft YaHei UI',13,'bold')).pack(anchor='w',pady=10)
+        ttk.Checkbutton(body.body,text='记住窗口布局（含位置和分栏）',variable=remember,
+                        command=lambda:(self.settings.update(remember_window=remember.get()),self.save_settings())).pack(anchor='w',pady=8)
+        label = ttk.Label(body.body,text='重启时会将窗口限制在当前屏幕可用区域内，避免恢复到屏幕外。窗口较小时，中间页面可滚动，底部操作栏保持可见。',wraplength=540)
+        label.pack(fill='x',pady=10)
+        body.canvas.bind('<Configure>',lambda e:label.configure(wraplength=max(200,e.width-30)),add='+')
+        actions = Flow(win);actions.grid(row=1,column=0,sticky='ew',padx=10,pady=8)
+        actions.add(ttk.Button(actions,text='恢复默认布局',command=self.reset_layout))
+        actions.add(ttk.Button(actions,text='关闭',command=win.destroy))
+        return win
+
+    def cookie_modified(self,event=None):
+        if not self.cookie_text.edit_modified():
+            return
+        self.cookie_text.edit_modified(False)
+        if self._cookie_timer:
+            self.root.after_cancel(self._cookie_timer)
+        self._cookie_timer = self.root.after(400,self.preview_cookie)
+
+    def preview_cookie(self):
+        self._cookie_timer = None
+        if self.busy:
+            return
+        try:
+            result = extract_cookies(self.cookie_text.get('1.0','end'))
+            self.cookie_info.set(result.summary)
+        except ValueError as exc:
+            self.cookie_info.set(str(exc))
+
+    def sort_by(self,scope,column):
+        previous = self.sort_state.get(scope)
+        self.sort_state[scope] = (column,not previous[1] if previous and previous[0]==column else False)
+        tree = self.course_tree if scope=='course' else self.file_tree
+        for key,title in tree.heading_titles.items():
+            suffix = (' ↓' if self.sort_state[scope][1] else ' ↑') if key==column else ''
+            tree.heading(key,text=title+suffix)
+        self.render_courses() if scope=='course' else self.render_files()
+
+    @staticmethod
+    def natural_key(value):
+        return [(1,int(part)) if part.isdigit() else (0,part.casefold()) for part in re.split(r'(\d+)',str(value))]
+
+    def details(self,title,text):
+        win = tk.Toplevel(self.root);win.title(title)
+        fit_window(win,default=(760,520));win.columnconfigure(0,weight=1);win.rowconfigure(0,weight=1)
+        field = tk.Text(win,wrap='word',padx=12,pady=12,font=('Microsoft YaHei UI',10),width=1,height=1)
+        scroll = ttk.Scrollbar(win,command=field.yview);field.configure(yscrollcommand=scroll.set)
+        field.grid(row=0,column=0,sticky='nsew');scroll.grid(row=0,column=1,sticky='ns')
+        field.insert('1.0',text);field.configure(state='disabled')
+        actions = Flow(win);actions.grid(row=1,column=0,columnspan=2,sticky='ew',padx=10,pady=8)
+        actions.add(ttk.Button(actions,text='复制详情',command=lambda:(win.clipboard_clear(),win.clipboard_append(text))))
+        actions.add(ttk.Button(actions,text='关闭',command=win.destroy))
+        return win
+
+    def file_details(self,event=None):
+        if event and not self.file_tree.identify_row(event.y):
+            return
+        selected = self.file_tree.selection()
+        c = self.course()
+        if not selected or not c:
+            return
+        u = next(u for u in c['_files'] if str(u['id'])==selected[0])
+        return self.details('课件详情',f"课程：{c['name']}\n文件：{u['name']}\n大小：{size_text(u.get('size'))}\n教学活动：{u.get('activity_title','')}\n目标目录：{Path(self.folder.get())/str(c['id'])}")
+
+    def task_details(self,event=None):
+        if event and not self.task_tree.identify_row(event.y):
+            return
+        selected = self.task_tree.selection()
+        if selected:
+            t = self.tasks[int(selected[0])]
+            return self.details('任务详情',f"{t['upload']['name']}\n课程：{t['course']}\n状态：{t['state']}\n{t['detail']}")
 
     def toggle_cookie(self):
         if self.cookie_visible:
@@ -221,6 +414,7 @@ class Application:
             return
         self.cookie_text.delete('1.0', 'end')
         self.raw_cookie = ''
+        self.cookie_info.set('Cookie 已清空，请重新粘贴。')
         self.connected = False
         self.status.set('Cookie 已清空，请重新验证。')
         self.update_controls()
@@ -230,6 +424,7 @@ class Application:
 
     def focus_cookie(self):
         self.root.lift()
+        self.tabs.select(2)
         if not self.cookie_visible:
             self.toggle_cookie()
         self.cookie_text.focus_set()
@@ -260,25 +455,14 @@ class Application:
         info = self.update_info
         if not info or info.get('state') != 'available':
             return
-        win = tk.Toplevel(self.root)
-        win.title('发现新版本')
-        win.geometry('650x490')
-        win.minsize(500, 350)
-        frame = ttk.Frame(win, padding=20)
-        frame.pack(fill='both', expand=True)
-        ttk.Label(frame, text=f"新版本 {info['version']} 已发布", font=('Microsoft YaHei UI', 16, 'bold')).pack(anchor='w')
-        ttk.Label(frame, text=f'当前版本 {VERSION} · 来自项目 GitHub Releases').pack(anchor='w', pady=8)
-        notes = tk.Text(frame, wrap='word', height=10, font=('Microsoft YaHei UI', 10))
-        notes.insert('1.0', info.get('notes', '暂无说明。'))
-        notes.configure(state='disabled')
-        notes.pack(fill='both', expand=True)
-        ttk.Label(frame, text='下载后退出旧版，再运行新版 EXE；不会自动覆盖正在运行的文件。', wraplength=580).pack(anchor='w', pady=10)
-        actions = ttk.Frame(frame)
-        actions.pack(fill='x')
-        ttk.Button(actions, text='查看发布页面', command=lambda: webbrowser.open(info['url'])).pack(side='left')
+        text = f"新版本 {info['version']} 已发布\n当前版本 {VERSION}\n\n{info.get('notes','暂无说明。')}\n\n下载后退出旧版，再运行新版 EXE。"
+        win = self.details('发现新版本',text)
+        actions = next(w for w in win.winfo_children() if isinstance(w,Flow))
+        actions.add(ttk.Button(actions,text='查看发布页面',command=lambda:webbrowser.open(info['url'])))
         if info.get('download_url'):
-            ttk.Button(actions, text='下载新版 EXE', command=lambda: webbrowser.open(info['download_url'])).pack(side='left', padx=8)
-        ttk.Button(actions, text='重新检查', command=lambda: (win.destroy(), self.check_updates(manual=True))).pack(side='right')
+            actions.add(ttk.Button(actions,text='下载新版 EXE',command=lambda:webbrowser.open(info['download_url'])))
+        actions.add(ttk.Button(actions,text='重新检查',command=lambda:(win.destroy(),self.check_updates(manual=True))))
+        return win
 
     @staticmethod
     def can_select(u):
@@ -293,19 +477,30 @@ class Application:
     def render_courses(self):
         for item in self.course_tree.get_children():
             self.course_tree.delete(item)
-        for c in self.courses:
+        courses = self.courses
+        if 'course' in self.sort_state:
+            column,descending = self.sort_state['course']
+            courses = sorted(courses,key=lambda c:self.natural_key(c['name']) if column=='name' else len(c['_files']),reverse=descending)
+        visible = []
+        for c in courses:
             if self.course_query.get().lower() not in c['name'].lower():
                 continue
             if self.semester.get() != '全部学期' and c['_semester'] != self.semester.get():
                 continue
+            visible.append(c['id'])
             eligible = [u for u in c['_files'] if self.can_select(u)]
             n = sum(self.key(c, u) in self.selected for u in eligible)
             box = '☑' if eligible and n == len(eligible) else ('◩' if n else '☐')
             if c['id'] in self.pending_courses:
                 box = '☑'
             self.course_tree.insert('', 'end', iid=str(c['id']), values=(f"{box} {c['name']}", c['_state']))
+        changed = self.current not in visible
+        if changed:
+            self.current = visible[0] if visible else None
         if self.current and self.course_tree.exists(str(self.current)):
             self.course_tree.selection_set(str(self.current))
+        if changed:
+            self.render_files()
         self.update_summary()
 
     def visible_files(self):
@@ -326,18 +521,37 @@ class Application:
             if self.only_selected.get() and self.key(c, u) not in self.selected:
                 continue
             result.append(u)
+        if 'file' in self.sort_state:
+            column,descending = self.sort_state['file']
+            def value(u):
+                if column=='size':
+                    return u.get('size') or 0
+                field = u['name'] if column=='name' else u.get('activity_title','') if column=='activity' else ('原件' if u.get('allow_download') else '预览 PDF')
+                return self.natural_key(field)
+            result.sort(key=value,reverse=descending)
         return result
 
     def render_files(self):
         self.file_tree.delete(*self.file_tree.get_children())
         c = self.course()
-        self.title.configure(text=c['name'] if c else '选择课程查看课件')
+        count = sum(self.key(c,u) in self.selected for u in c['_files']) if c else 0
+        self.title.configure(text=f"{c['name']} · 已选 {count}/{len(c['_files'])}" if c else '选择课程查看课件')
         if c:
             for u in self.visible_files():
                 selectable = self.can_select(u)
                 box = ('☑' if self.key(c, u) in self.selected else '☐') if selectable else '—'
                 mode = '原件' if u.get('allow_download') else ('尝试预览 PDF' if selectable else '暂不可下载')
                 self.file_tree.insert('', 'end', iid=str(u['id']), values=(f"{box} {u['name']}", size_text(u.get('size')), mode, u.get('activity_title', '')))
+        message = ''
+        if c and not c['_files']:
+            message = '此课程尚未探测或探测失败，可点击重新探测。' if c['_state']!='无附件' else '此课程没有附件课件。'
+        elif c and not self.visible_files():
+            message = '没有匹配课件，请清除关键词或调整筛选条件。'
+        self.empty_hint.configure(text=message)
+        if message:
+            self.empty_hint.pack(fill='x',pady=3)
+        else:
+            self.empty_hint.pack_forget()
         self.update_summary()
 
     def course_focus(self, event=None):
@@ -366,7 +580,7 @@ class Application:
         if not row:
             return
         self.current = int(row)
-        if self.course_tree.identify_column(event.x) == '#1' and event.x < 34:
+        if self.course_tree.identify_column(event.x) == '#1' and event.x < 34 and self.course_tree.xview()[0]==0:
             self.toggle_course(row)
         self.render_files()
 
@@ -389,7 +603,7 @@ class Application:
 
     def click_file(self, event):
         row = self.file_tree.identify_row(event.y)
-        if row and self.file_tree.identify_column(event.x) == '#1' and event.x < 34:
+        if row and self.file_tree.identify_column(event.x) == '#1' and event.x < 34 and self.file_tree.xview()[0]==0:
             self.toggle_file(row)
 
     def space_file(self, event):
@@ -416,7 +630,7 @@ class Application:
     def update_summary(self):
         selected_files = [(c, u) for c in self.courses for u in c['_files'] if self.key(c, u) in self.selected]
         size = sum(u.get('size') or 0 for _, u in selected_files)
-        self.summary.set(f'已选 {len({c["id"] for c, _ in selected_files})} 门课程 · {len(selected_files)} 份课件 · 已知大小 {size_text(size)}（含被筛选隐藏的文件）')
+        self.summary.set(f'已选 {len({c["id"] for c, _ in selected_files})} 门课程 · {len(selected_files)} 份课件 · 已知大小 {size_text(size) if size else '0 KB'}（含被筛选隐藏的文件）')
         self.update_controls()
 
     def update_controls(self):
@@ -429,7 +643,7 @@ class Application:
         self.stop_button.configure(state='normal' if self.busy and not self.stop_event.is_set() else 'disabled')
         self.download_button.configure(state='normal' if self.connected and self.selected and not self.busy and self.folder.get().strip() else 'disabled')
         self.retry_scan.configure(state='normal' if self.connected and self.current and not self.busy else 'disabled')
-        retry = any(t['state'] in ('失败', '已取消', '等待中', '需重新登录') for t in self.tasks)
+        retry = any(t.get('available',True) and t['state'] in ('失败', '已取消', '等待中', '需重新登录') for t in self.tasks)
         self.retry_button.configure(state='normal' if self.connected and not self.busy and retry else 'disabled')
 
     def start(self, work):
@@ -454,13 +668,18 @@ class Application:
             return
         raw = self.cookie_text.get('1.0', 'end').strip()
         try:
-            parse_cookies(raw)
+            result = extract_cookies(raw)
+            raw = result.normalized()
+            self.cookie_info.set(result.summary)
         except ValueError as exc:
+            self.cookie_info.set(str(exc))
             messagebox.showerror('Cookie 无效', str(exc))
             return
         # Revalidating an expired Cookie preserves pending tasks. Once the new
         # catalog arrives, discard tasks from courses this session cannot access.
         self.raw_cookie = raw
+        self.cookie_text.delete('1.0','end')
+        self.cookie_text.insert('1.0',raw)
         self.connected = False
         self.courses = []
         self.current = None
@@ -516,8 +735,7 @@ class Application:
         with tempfile.TemporaryFile(dir=folder) as f:
             f.write(b'test')
         self.folder.set(str(folder))
-        self.settings_dir.mkdir(parents=True, exist_ok=True)
-        (self.settings_dir / 'settings.json').write_text(json.dumps({'folder': str(folder)}, ensure_ascii=False), encoding='utf-8')
+        self.save_settings()
         return folder
 
     def download_selected(self):
@@ -535,7 +753,7 @@ class Application:
             return
         todo = []
         for i, task in enumerate(self.tasks):
-            if task['state'] in ('失败', '已取消', '等待中', '需重新登录'):
+            if task.get('available',True) and task['state'] in ('失败', '已取消', '等待中', '需重新登录'):
                 task.update(state='等待中', progress='', detail='')
                 task['folder'] = task['folder'] or str(folder / str(task['course_id']))
                 todo.append(i)
@@ -647,13 +865,22 @@ class Application:
                 self.current = self.courses[0]['id'] if self.courses else None
                 self.render_courses()
                 self.render_files()
-                self.status.set(f'已验证，发现 {len(self.courses)} 门课程。')
+                self.tabs.select(0)
+                self.status.set(f'已验证，发现 {len(self.courses)} 门课程。连接设置已收起，可从标签页修改。')
             elif kind == 'files':
                 cid, files = data
                 c = next(c for c in self.courses if c['id'] == cid)
                 keys = {self.key(c, u) for u in files}
                 self.selected = {k for k in self.selected if k[0] != cid or k in keys}
                 c.update(_files=files, _state=f'{len(files)} 份' if files else '无附件')
+                by_id = {u['id']:u for u in files}
+                for task in self.tasks:
+                    if task['course_id']==cid and task['state'] not in ('已完成','已跳过'):
+                        task['available'] = task['upload']['id'] in by_id
+                        if task['available']:
+                            task['upload'] = dict(by_id[task['upload']['id']])
+                        else:
+                            task.update(state='失败',detail='此课件已移除或当前账号不可访问。')
                 if cid in self.pending_courses:
                     self.selected.update(self.key(c, u) for u in files if self.can_select(u))
                     self.pending_courses.discard(cid)
@@ -693,6 +920,7 @@ class Application:
                 self.write_report()
         self.update_controls()
         if self.closing and not self.busy:
+            self.save_settings()
             self.root.destroy()
             return
         self.root.after(80, self.poll)
@@ -713,6 +941,7 @@ class Application:
                 self.closing = True
                 self.stop()
         else:
+            self.save_settings()
             self.root.destroy()
 
 

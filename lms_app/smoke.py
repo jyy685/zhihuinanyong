@@ -69,12 +69,14 @@ def run(report_path):
                     time.sleep(.02)
                 root.update()
 
-            app.cookie_text.insert('1.0', 'session=offline-diagnostic')
+            app.cookie_text.insert('1.0','页面说明\nCookie: session=offline-diagnostic\n其他页面内容')
             app.connect()
             wait_idle()
             assert app.connected and len(app.courses) == 2
+            assert '页面说明' not in app.raw_cookie
             assert sum(len(c['_files']) for c in app.courses) == 2
             report['checks'].append('GUI authentication and course/file discovery with local fixture server')
+            report['checks'].append('Fuzzy Cookie extraction without retaining surrounding page text')
             app.toggle_course('101')
             assert app.selected == {(101, 1010)}
             app.current = 102
@@ -122,6 +124,17 @@ def run(report_path):
             task_report = (Path(temp) / 'settings/last_download.json').read_text(encoding='utf-8')
             assert 'offline-diagnostic' not in settings + task_report
             report['checks'].append('Settings and task records exclude credentials')
+            root.attributes('-alpha',0)
+            root.deiconify()
+            root.geometry('900x600+3000+20')
+            for _ in range(5):
+                root.update();time.sleep(.03)
+            for widget in (app.download_button,app.stop_button,app.folder_button,app.update_button):
+                x=widget.winfo_rootx()-root.winfo_rootx()
+                y=widget.winfo_rooty()-root.winfo_rooty()
+                assert 0<=x and x+widget.winfo_width()<=root.winfo_width()
+                assert 0<=y and y+widget.winfo_height()<=root.winfo_height()
+            report['checks'].append('900x600 window keeps download, directory, stop and update controls visible')
             report['ok'] = True
     except Exception as exc:
         report['error'] = type(exc).__name__ + ': ' + str(exc)

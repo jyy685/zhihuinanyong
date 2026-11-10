@@ -23,50 +23,8 @@ def check_cancel(stop):
 
 
 def parse_cookies(raw):
-    raw = raw.strip().lstrip('\ufeff')
-    if not raw:
-        raise ValueError('请先粘贴 Cookie，或从文件导入。')
-    jar = requests.cookies.RequestsCookieJar()
-
-    def put(name, value, domain='lms.nju.edu.cn', path='/'):
-        if not (domain.lstrip('.') == 'nju.edu.cn' or domain.lstrip('.').endswith('.nju.edu.cn')):
-            return
-        if name and value and not any(c in name + value for c in '\r\n\t'):
-            jar.set(name, value, domain=domain, path=path or '/')
-
-    if raw.startswith(('[', '{')):
-        try:
-            data = json.loads(raw)
-            if isinstance(data, dict):
-                data = data.get('cookies', data)
-            if isinstance(data, dict):
-                data = [dict(name=k, value=v) for k, v in data.items()]
-            for c in data:
-                put(str(c['name']), str(c['value']), c.get('domain', 'lms.nju.edu.cn'), c.get('path', '/'))
-        except (ValueError, KeyError, TypeError, AttributeError):
-            raise ValueError('Cookie JSON 格式不正确。') from None
-    elif '\t' in raw:
-        for line in raw.splitlines():
-            if line.startswith('#HttpOnly_'):
-                line = line[len('#HttpOnly_'):]
-            elif line.startswith('#'):
-                continue
-            cols = line.split('\t')
-            if len(cols) == 7 and cols[1] in ('TRUE', 'FALSE'):
-                put(cols[5], cols[6], cols[0], cols[2])
-            elif len(cols) >= 4:
-                put(cols[0], cols[1], cols[2], cols[3])
-    else:
-        raw = re.sub(r'^Cookie:\s*', '', raw, flags=re.I)
-        for pair in raw.split(';'):
-            if '=' in pair:
-                name, value = pair.strip().split('=', 1)
-                put(name, value)
-    if not jar or not any(c.name in ('session', 'role_token') for c in jar):
-        raise ValueError('没有找到登录 Cookie。请复制完整表格，或粘贴 session=完整值。')
-    if any('…' in c.value or '...' in c.value or '示例' in c.value or '完整值' in c.value for c in jar):
-        raise ValueError('Cookie 包含示例文字或省略号，请从 Cookie Value 复制完整值。')
-    return jar
+    from .cookies import extract_cookies
+    return extract_cookies(raw).jar
 
 
 class Client:

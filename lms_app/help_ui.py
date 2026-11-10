@@ -2,6 +2,7 @@
 import math
 import tkinter as tk
 from tkinter import ttk
+from .ui_support import Flow, fit_window
 
 STEPS = [
     ('打开“应用程序”', '先登录学校网站，然后打开开发者工具。', [
@@ -35,8 +36,7 @@ class CookieGuide(tk.Toplevel):
     def __init__(self, parent, assets, on_return=None):
         super().__init__(parent)
         self.title('Cookie 获取教程 · 图文指引')
-        self.geometry(f'{min(1130, self.winfo_screenwidth()-80)}x{min(870, self.winfo_screenheight()-100)}')
-        self.minsize(800, 560)
+        fit_window(self,default=(1130,850))
         self.configure(bg='#f1f5f9')
         self.assets = assets
         self.on_return = on_return
@@ -45,23 +45,29 @@ class CookieGuide(tk.Toplevel):
         self.thumbnail = None
         header = tk.Frame(self, bg='#eff6ff', padx=24, pady=16)
         header.pack(fill='x')
-        tk.Label(header, text='Cookie 获取教程', font=('Microsoft YaHei UI', 19, 'bold'), bg='#eff6ff', fg='#172d50').pack(anchor='w')
-        tk.Label(header, text='跟着截图完成：打开应用程序 → 选择学校域名 → 复制并验证', font=('Microsoft YaHei UI', 11), bg='#eff6ff', fg='#526782').pack(anchor='w', pady=(6, 0))
+        self.heading = tk.Label(header, text='Cookie 获取教程', font=('Microsoft YaHei UI', 16, 'bold'), bg='#eff6ff', fg='#172d50')
+        self.heading.pack(anchor='w')
+        self.description = tk.Label(header, text='打开应用程序 → 选择学校域名 → 复制并验证', font=('Microsoft YaHei UI', 10), bg='#eff6ff', fg='#526782',justify='left')
+        self.description.pack(anchor='w',pady=4)
+        self.step_select = ttk.Combobox(header,values=[f'{i+1}. {s[0]}' for i,s in enumerate(STEPS)],state='readonly')
+        self.step_select.pack(fill='x')
+        self.step_select.bind('<<ComboboxSelected>>',lambda e:self.show_step(self.step_select.current()))
         bar = tk.Frame(self, bg='#fff7e6', padx=24, pady=8)
         bar.pack(fill='x')
-        tk.Label(bar, text='隐私提示：教程截图已遮盖所有 Cookie 值；真实 Cookie 仅粘贴到应用中。', bg='#fff7e6', fg='#815c16', font=('Microsoft YaHei UI', 10)).pack(anchor='w')
-        footer = ttk.Frame(self, padding=(18, 12))
+        self.privacy = tk.Label(bar,text='截图已脱敏；真实 Cookie 仅粘贴到应用中。', bg='#fff7e6', fg='#815c16',font=('Microsoft YaHei UI',10),justify='left')
+        self.privacy.pack(anchor='w')
+        footer = self.footer = Flow(self,padding=(8,4))
         footer.pack(side='bottom', fill='x')
         self.previous = ttk.Button(footer, text='← 上一步', command=lambda: self.show_step(self.step-1))
-        self.previous.pack(side='left')
+        footer.add(self.previous)
         self.counter = ttk.Label(footer)
-        self.counter.pack(side='left', padx=14)
+        footer.add(self.counter)
         self.next_button = ttk.Button(footer, text='下一步 →', command=lambda: self.show_step(self.step+1))
-        self.next_button.pack(side='left')
-        ttk.Button(footer, text='回到应用粘贴 Cookie', command=self.return_to_app).pack(side='right')
+        footer.add(self.next_button)
+        footer.add(ttk.Button(footer,text='回到应用粘贴 Cookie',command=self.return_to_app))
         main = tk.Frame(self, bg='#f1f5f9')
         main.pack(fill='both', expand=True, padx=16, pady=14)
-        sidebar = tk.Frame(main, bg='#f1f5f9', width=205)
+        sidebar = self.sidebar = tk.Frame(main, bg='#f1f5f9', width=205)
         sidebar.pack(side='left', fill='y', padx=(0, 14))
         self.nav = []
         for i, (title, *_) in enumerate(STEPS):
@@ -69,7 +75,7 @@ class CookieGuide(tk.Toplevel):
                           anchor='w', font=('Microsoft YaHei UI', 10), relief='flat', bd=0, padx=10, pady=13, cursor='hand2')
             b.pack(fill='x', pady=(0, 6))
             self.nav.append(b)
-        area = ttk.Frame(main)
+        area = self.area = ttk.Frame(main)
         area.pack(side='left', fill='both', expand=True)
         self.canvas = tk.Canvas(area, bg='white', highlightthickness=0)
         scroll = ttk.Scrollbar(area, orient='vertical', command=self.canvas.yview)
@@ -82,7 +88,19 @@ class CookieGuide(tk.Toplevel):
         self.canvas.bind('<Configure>', self.resize)
         self.bind('<MouseWheel>', self.wheel)
         self.wrap_labels = []
+        self.bind('<Configure>',self.resize_outer,add='+')
         self.show_step(0)
+
+    def resize_outer(self,event):
+        if event.widget is not self:
+            return
+        width = max(200,self.winfo_width()-48)
+        for label in (self.heading,self.description,self.privacy):
+            label.configure(wraplength=width)
+        if width < 950:
+            self.sidebar.pack_forget()
+        elif not self.sidebar.winfo_manager():
+            self.sidebar.pack(side='left',fill='y',padx=(0,14),before=self.area)
 
     def wheel(self, event):
         if self.winfo_containing(event.x_root, event.y_root) is not None:
@@ -107,6 +125,7 @@ class CookieGuide(tk.Toplevel):
         if not 0 <= index < len(STEPS):
             return
         self.step = index
+        self.step_select.current(index)
         self.wrap_labels = []
         self.image_label = None
         for child in self.content.winfo_children():
@@ -120,7 +139,9 @@ class CookieGuide(tk.Toplevel):
             label.pack(fill='x', pady=(10, 0))
             self.wrap_labels.append(label)
         if image_name:
-            tk.Label(self.content, text=caption+' · 点击放大', bg='white', fg='#2563eb', font=('Microsoft YaHei UI', 10)).pack(anchor='w', pady=(18, 6))
+            caption_label = tk.Label(self.content,text=caption+' · 点击放大',bg='white',fg='#2563eb',font=('Microsoft YaHei UI',10),wraplength=500,justify='left')
+            caption_label.pack(anchor='w',pady=(18,6))
+            self.wrap_labels.append(caption_label)
             original = self.image(image_name)
             factor = max(1, math.ceil(original.width()/max(280, self.canvas.winfo_width()-48)))
             self.thumbnail = original.subsample(factor, factor)
@@ -136,10 +157,10 @@ class CookieGuide(tk.Toplevel):
     def zoom(self, name):
         viewer = tk.Toplevel(self)
         viewer.title('教程截图 · 原图已脱敏，可滚动查看')
-        viewer.geometry(f'{min(1280, self.winfo_screenwidth()-100)}x{min(950, self.winfo_screenheight()-120)}')
-        tools = ttk.Frame(viewer, padding=8)
+        fit_window(viewer,default=(1200,850))
+        tools = Flow(viewer,padding=8)
         tools.pack(fill='x')
-        ttk.Label(tools, text='原始大小可看清文字；用滚动条或滚轮查看细节。').pack(side='left')
+        tools.add(ttk.Label(tools,text='滚动查看截图细节'))
         pane = ttk.Frame(viewer)
         pane.pack(fill='both', expand=True)
         canvas = tk.Canvas(pane, bg='#202020', highlightthickness=0)
@@ -157,8 +178,8 @@ class CookieGuide(tk.Toplevel):
             viewer.display_image = original.subsample(factor, factor)
             canvas.itemconfigure(item, image=viewer.display_image)
             canvas.configure(scrollregion=canvas.bbox('all'))
-        ttk.Button(tools, text='适应宽度', command=lambda: fit(False)).pack(side='right')
-        ttk.Button(tools, text='原始大小', command=lambda: fit(True)).pack(side='right', padx=6)
+        tools.add(ttk.Button(tools,text='适应宽度',command=lambda:fit(False)))
+        tools.add(ttk.Button(tools,text='原始大小',command=lambda:fit(True)))
         canvas.configure(scrollregion=canvas.bbox('all'))
         viewer.bind('<MouseWheel>', lambda e: canvas.yview_scroll(-int(e.delta/120), 'units'))
         return viewer
