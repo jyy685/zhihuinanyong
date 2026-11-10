@@ -1,0 +1,35 @@
+# Personal authentication and environment
+cookie.txt
+cookies*.txt
+cookies*.json
+*.cookie
+.env
+.env.*
+.venv/
+venv/
+
+# Downloaded courseware, catalogs and local reports
+downloads/
+catalog.json
+failed.json
+*.part
+*.log
+
+# Captured site data and diagnostic scripts
+probe*
+course_page.html
+
+# Python and build output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+
+# Editor and local settings
+.idea/
+.vscode/
+settings.local.json
+Thumbs.db
+.DS_Store
